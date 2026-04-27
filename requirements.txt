@@ -1,0 +1,9 @@
+torch>=2.0
+torchvision
+diffusers>=0.21
+transformers>=4.35
+accelerate
+gradio>=4.0
+Pillow
+numpy
+matplotlib
