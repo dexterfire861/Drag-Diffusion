@@ -1,6 +1,10 @@
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
 from PIL import Image, ImageDraw
 
 from eval.reference_profile import ReferenceProfile, score_image_against_reference
+from eval_reference import resolve_image
 
 
 def make_scene(
@@ -46,3 +50,25 @@ def test_custom_profile_accepts_different_expected_position():
     score = score_image_against_reference(far_right, profile)
 
     assert score.dog_position >= 0.90
+
+
+def test_latest_result_ignores_reference_report():
+    with TemporaryDirectory() as tmp:
+        result_dir = Path(tmp)
+        result = result_dir / "candidate_ours.png"
+        report = result_dir / "reference_eval_report.png"
+        Image.new("RGB", (8, 8), "green").save(result)
+        Image.new("RGB", (8, 8), "black").save(report)
+
+        assert resolve_image("latest", result_dir) == result
+
+
+def test_latest_result_prefers_ours_over_baseline():
+    with TemporaryDirectory() as tmp:
+        result_dir = Path(tmp)
+        baseline = result_dir / "candidate_baseline.png"
+        ours = result_dir / "candidate_ours.png"
+        Image.new("RGB", (8, 8), "blue").save(ours)
+        Image.new("RGB", (8, 8), "red").save(baseline)
+
+        assert resolve_image("latest", result_dir) == ours

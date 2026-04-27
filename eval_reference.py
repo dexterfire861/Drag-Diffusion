@@ -15,14 +15,46 @@ from PIL import Image, ImageDraw
 from eval.reference_profile import ReferenceProfile, score_against_lawn_dog_reference
 
 
-def _resolve_image(path: str) -> Path:
+_GENERATED_REPORT_SUFFIXES = (
+    "_report.png",
+    "_report.jpg",
+    "_report.jpeg",
+)
+_GENERATED_RESULT_STEMS = {
+    "reference_eval",
+    "reference_eval_report",
+    "quick_test_reference_eval",
+    "quick_test_reference_report",
+}
+
+
+def _is_candidate_image(path: Path) -> bool:
+    """Exclude evaluator outputs so watch mode never scores its own report."""
+    name = path.name.lower()
+    if path.stem.lower() in _GENERATED_RESULT_STEMS:
+        return False
+    if name.endswith(_GENERATED_REPORT_SUFFIXES):
+        return False
+    if "_mask" in name or name.endswith("_composite.png"):
+        return False
+    return path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+
+
+def resolve_image(path: str, result_dir: Path = Path("data/results")) -> Path:
     if path != "latest":
         return Path(path)
 
-    result_dir = Path("data/results")
-    candidates = []
-    for pattern in ("*_ours.png", "*_baseline.png", "*.png", "*.jpg", "*.jpeg"):
-        candidates.extend(result_dir.glob(pattern))
+    candidate_groups = [
+        [p for p in result_dir.glob("*_ours.png") if _is_candidate_image(p)],
+        [p for p in result_dir.glob("*_baseline.png") if _is_candidate_image(p)],
+        [
+            p
+            for pattern in ("*.png", "*.jpg", "*.jpeg")
+            for p in result_dir.glob(pattern)
+            if _is_candidate_image(p)
+        ],
+    ]
+    candidates = next((group for group in candidate_groups if group), [])
     if not candidates:
         raise FileNotFoundError("No images found in data/results; pass --image explicitly.")
     return max(candidates, key=lambda p: p.stat().st_mtime)
@@ -83,8 +115,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    last_image_signature = None
     while True:
-        image_path = _resolve_image(args.image)
+        image_path = resolve_image(args.image)
+        image_signature = (image_path, image_path.stat().st_mtime_ns)
+        if args.watch_interval > 0 and image_signature == last_image_signature:
+            time.sleep(args.watch_interval)
+            continue
+        last_image_signature = image_signature
+
         image = Image.open(image_path).convert("RGB")
         metrics = score_against_lawn_dog_reference(image, ReferenceProfile())
         metrics["image_path"] = str(image_path)
