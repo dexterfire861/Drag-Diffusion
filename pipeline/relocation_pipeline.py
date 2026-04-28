@@ -9,7 +9,7 @@ from inversion.ddpm_inversion import ddpm_invert
 from noise_shift.noise_shift import shift_all_noise_maps
 
 
-MODEL_ID = "stabilityai/stable-diffusion-2-1"
+MODEL_ID = "Lykon/dreamshaper-8"
 
 
 class ObjectRelocationPipeline:
