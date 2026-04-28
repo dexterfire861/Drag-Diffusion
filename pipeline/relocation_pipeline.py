@@ -107,7 +107,7 @@ class ObjectRelocationPipeline:
         use_noise_shift: bool = True,
         seed: int = 42,
         num_inference_steps: int = 50,
-        sdedit_strength: float = 0.3,
+        sdedit_strength: float = 0.7,
         guidance_scale: float = 7.5,
         feather_sigma: float = 2.0,
     ) -> Image.Image:
@@ -120,7 +120,7 @@ class ObjectRelocationPipeline:
           3. RePaint background lock (preserves background exactly, blends seams)
           4. DDPM noise shift (our contribution — preserves object texture during blend)
 
-        sdedit_strength: 0.7 (default) = enough noise for good seam blending.
+        sdedit_strength: fraction of timesteps to denoise. 0.7 = good seam blending.
             Lower = more faithful to composite; higher = more model creativity.
         use_noise_shift=True  → ours; False → baseline for ablation.
         """
@@ -147,9 +147,9 @@ class ObjectRelocationPipeline:
         M_src = prepare_latent_mask(source_mask.resize((sz, sz)), device, self.latent_size)
         M_tgt = prepare_latent_mask(target_mask.resize((sz, sz)), device, self.latent_size)
 
-        # RePaint background mask — dilated so seam region is also free to blend
-        M_src_soft = gaussian_blur_mask(M_src, sigma=4.0)
-        M_tgt_soft = gaussian_blur_mask(M_tgt, sigma=4.0)
+        # RePaint background mask
+        M_src_soft = gaussian_blur_mask(M_src, sigma=2.0)
+        M_tgt_soft = gaussian_blur_mask(M_tgt, sigma=2.0)
         bg_mask = (1.0 - M_src_soft.clamp(0, 1)) * (1.0 - M_tgt_soft.clamp(0, 1))  # [1,1,H,W]
 
         # Composite lock — locks the target region to the copy-pasted composite,
@@ -181,6 +181,7 @@ class ObjectRelocationPipeline:
         # 8. Denoising loop with RePaint background locking
         unet_dtype = next(self.unet.parameters()).dtype
         active_timesteps = timesteps[start_idx:]
+        lock_cutoff = len(active_timesteps) // 2
 
         for i, t in enumerate(active_timesteps):
             t_global_idx = start_idx + i
@@ -205,10 +206,11 @@ class ObjectRelocationPipeline:
                 x_t_orig = abar_prev.sqrt() * x0_orig + (1 - abar_prev).sqrt() * orig_noise
                 x_t = x_t * (1.0 - bg_mask) + x_t_orig * bg_mask
 
-                # Lock target region to correctly-noised composite (preserve pasted pixels)
-                comp_noise = noise_maps[t_prev_int]
-                x_t_comp = abar_prev.sqrt() * x0_composite + (1 - abar_prev).sqrt() * comp_noise
-                x_t = x_t * (1.0 - M_tgt_lock) + x_t_comp * M_tgt_lock
+                # Lock target region to composite only during early (high-noise) steps
+                if i < lock_cutoff:
+                    comp_noise = noise_maps[t_prev_int]
+                    x_t_comp = abar_prev.sqrt() * x0_composite + (1 - abar_prev).sqrt() * comp_noise
+                    x_t = x_t * (1.0 - M_tgt_lock) + x_t_comp * M_tgt_lock
 
         # 9. Second pass: inpaint source region at SDEdit strength 0.5
         # Locks everything outside the source to the first-pass result; only the
@@ -216,7 +218,7 @@ class ObjectRelocationPipeline:
         x0_result = x_t.clone()
         src_lock_soft = (1.0 - gaussian_blur_mask(M_src, sigma=2.0)).clamp(0, 1)
 
-        inp_gen_device = device if device.type == "mps" else torch.device("cpu")
+        inp_gen_device = device
         inp_gen = torch.Generator(device=inp_gen_device).manual_seed(seed + 1)
         inp_noise_maps = {}
         for t in timesteps:
